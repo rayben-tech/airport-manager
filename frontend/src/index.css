@@ -1,0 +1,293 @@
+@import "tailwindcss";
+
+/* Design tokens: every color, size, radius and shadow of the app lives here. */
+@theme static {
+  --font-sans: 'Inter Variable', system-ui, sans-serif;
+
+  --color-bg-1: #2a1b6b;
+  --color-bg-2: #4c33b8;
+  --color-bg-3: #7a5cd6;
+  --color-bg-4: #b9a3ea;
+
+  --color-primary: #5b3df5;
+  --color-btn-from: #4f35e0;
+  --color-btn-to: #7b5cff;
+  --color-premium-from: #4338ca;
+  --color-premium-to: #6d4fe0;
+  --color-gold: #fbbf24;
+  --color-sidebar: #140a50;
+
+  --color-success: #4ade80;
+  --color-success-bg: #22c55e;
+  --color-warning: #fb923c;
+  --color-warning-bg: #f97316;
+  --color-danger: #ef4444;
+  --color-logout: #ff7896;
+
+  /* light frosted theme (home screen + navbar) */
+  --color-ink: #1e1b4b;
+  --color-ink-soft: #4c4a7a;
+  --color-sky: #38bdf8;
+  --color-nav-to: #7c5cff;
+  --color-lilac-1: #b9a3ea;
+  --color-lilac-2: #d8c8f5;
+  --color-haze-mid: rgba(216, 200, 245, 0.75);
+  --color-haze-end: rgba(216, 200, 245, 0.92);
+  --glass-light-bg: rgba(255, 255, 255, 0.62);
+  --glass-light-border: rgba(255, 255, 255, 0.8);
+  --glass-light-blur: 28px;
+  --shadow-glass-light: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 10px 30px rgba(80, 50, 160, 0.18);
+  --radius-tile-lg: 22px;
+
+  /* "Rechercher un vol" screen */
+  --color-deep-1: #3b2a96;
+  --color-deep-2: #7c62d6;
+  --color-deep-3: #c4b2f0;
+  --color-deep-veil: rgba(59, 42, 150, 0.55);
+  --color-btn-mid: #6d4ff0;
+  --color-pink: #ec4899;
+  --shadow-search: 0 10px 30px rgba(79, 53, 224, 0.45);
+  --text-section: 17px;
+  --text-value: 16px;
+  --text-dest: 20px;
+  --text-price: 22px;
+
+  /* "Mes vols" screen */
+  --color-bag-to: #8b6cff;
+  --text-heading: 22px;
+  --text-strong: 15px;
+  --radius-chip: 14px;
+
+  /* airport map (/carte): light plan colors and pin categories */
+  --color-map-outside: #e8eaf5;
+  --color-map-floor: #ffffff;
+  --color-map-line: #cfd4ea;
+  --color-map-corridor: #f5f6fc;
+  --color-map-block: #dde1f1;
+  --color-map-garden: #dcefe3;
+  --color-map-apron: #dfe1eb;
+  --color-map-runway: #d6d9e5;
+  --color-map-text: #8e94b5;
+  --color-pin-gate: #2563eb;
+  --color-pin-food: #f97316;
+  --color-pin-shop: #9d3a73;
+  --color-pin-service: #0ea5a4;
+
+  /* "Mon profil" screen. Veil = photo at ~70% under rgba(58,36,150,0.55), flattened into one layer */
+  --color-profile-veil: rgba(58, 36, 150, 0.68);
+  --text-avatar: 40px;
+  --shadow-nav-glow: 0 8px 24px rgba(91, 61, 245, 0.55);
+  --shadow-frame: 0 30px 80px rgba(0, 0, 0, 0.45);
+
+  --text-flight-lg: 28px;
+  --text-label: 13px;
+  --radius-panel: 28px;
+  --radius-nav: 32px;
+  --radius-frame: 44px;
+
+  --glass-bg: rgba(255, 255, 255, 0.18);
+  --glass-border: rgba(255, 255, 255, 0.35);
+  --glass-blur: 24px;
+
+  --text-greeting: 26px;
+  --text-title: 18px;
+  --text-flight: 24px;
+  --text-body: 14px;
+  --text-small: 12px;
+  --text-tiny: 11px;
+
+  --radius-card: 24px;
+  --radius-tile: 20px;
+  --radius-control: 16px;
+
+  --shadow-glass: 0 8px 32px rgba(20, 10, 80, 0.25);
+  --shadow-glow: 0 0 24px rgba(123, 92, 255, 0.75);
+}
+
+@utility glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  box-shadow: var(--shadow-glass);
+}
+
+@utility btn-primary {
+  background: linear-gradient(90deg, var(--color-btn-from), var(--color-btn-to));
+  box-shadow: 0 6px 20px rgb(91 61 245 / 0.45);
+  color: #fff;
+  font-weight: 600;
+}
+
+@utility premium {
+  background: linear-gradient(90deg, var(--color-premium-from), var(--color-premium-to));
+}
+
+@utility glass-light {
+  background: var(--glass-light-bg);
+  border: 1px solid var(--glass-light-border);
+  backdrop-filter: blur(var(--glass-light-blur));
+  -webkit-backdrop-filter: blur(var(--glass-light-blur));
+  box-shadow: var(--shadow-glass-light);
+}
+
+/* photo inside the phone frame: occupies the top ~42%, melts into a lilac fog below */
+@utility photo-frame {
+  background:
+    linear-gradient(180deg, transparent 0%, transparent 25%, var(--color-haze-mid) 55%, var(--color-haze-end) 100%),
+    linear-gradient(180deg, transparent 28%, var(--color-lilac-2) 41%),
+    url('/bg.jpg') 50% top / auto 42% no-repeat,
+    linear-gradient(180deg, var(--color-lilac-1), var(--color-lilac-2));
+}
+
+/* deep variant (search screen): faint photo sliver in the top ~110px, then an opaque violet → lilac gradient */
+@utility photo-frame-deep {
+  background:
+    linear-gradient(180deg, transparent 72%, rgb(255 255 255 / 0.25) 100%),
+    linear-gradient(
+      180deg,
+      var(--color-deep-veil) 0px,
+      var(--color-deep-veil) 70px,
+      var(--color-deep-1) 115px,
+      var(--color-deep-2) 55%,
+      var(--color-deep-3) 100%
+    ),
+    url('/bg.jpg') center 30% / cover no-repeat,
+    var(--color-deep-1);
+}
+
+/* profile variant: violet-tinted photo in the top ~300px (plane right of the avatar), opaque gradient from 340px */
+@utility photo-frame-profile {
+  background:
+    linear-gradient(180deg, transparent 72%, rgb(255 255 255 / 0.25) 100%),
+    linear-gradient(
+      180deg,
+      var(--color-profile-veil) 0px,
+      var(--color-profile-veil) 230px,
+      var(--color-deep-1) 340px,
+      var(--color-deep-2) 62%,
+      var(--color-deep-3) 100%
+    ),
+    url('/bg.jpg') 27% top / auto 340px no-repeat,
+    var(--color-deep-1);
+}
+
+/* ---- shared building blocks for passenger screens ---- */
+@utility frost-card {
+  @apply glass-light rounded-3xl text-ink;
+}
+@utility round-glass {
+  @apply flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/30 bg-white/15 text-white backdrop-blur-md;
+}
+@utility chip {
+  @apply h-10 shrink-0 rounded-full border border-white/70 bg-white/55 px-4 text-body font-semibold text-ink backdrop-blur-md;
+}
+@utility chip-active {
+  @apply h-10 shrink-0 rounded-full bg-linear-to-r from-btn-from to-nav-to px-4 text-body font-bold text-white shadow-nav-glow;
+}
+@utility btn-cta {
+  @apply flex h-14 w-full items-center justify-center gap-2 rounded-full bg-linear-to-r from-btn-from to-btn-mid text-value font-bold text-white shadow-search;
+}
+/* frosted search/select field with dark text */
+@utility frost-field {
+  @apply glass-light flex h-[52px] items-center gap-3 rounded-full px-5 text-ink;
+}
+
+/* ---- airport map ---- */
+/* white outline around map labels so they stay readable on any background */
+@utility map-label {
+  text-shadow:
+    -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff,
+    0 0 3px #fff, 0 0 3px #fff;
+}
+/* pins track the map instantly while panning/pinching, and follow "fly to" and button zoom animations
+   (class toggled on the map root) */
+.map-pin {
+  transition: none;
+}
+.map-animating .map-pin {
+  transition: transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* route: stroke sizes are divided by the zoom (--inv) so they stay constant on screen */
+.route-casing {
+  stroke-width: calc(9 * var(--inv));
+}
+.route-line {
+  stroke-width: calc(5 * var(--inv));
+}
+.route-flow {
+  stroke-width: calc(2 * var(--inv));
+  stroke-dasharray: calc(5 * var(--inv)) calc(9 * var(--inv));
+  animation: route-flow 0.9s linear infinite;
+}
+@keyframes route-flow {
+  to {
+    stroke-dashoffset: calc(-14 * var(--inv));
+  }
+}
+
+/* center navbar button: violet gradient with a soft highlight on the upper part */
+@utility btn-plane {
+  background:
+    radial-gradient(circle at 35% 22%, rgb(255 255 255 / 0.4), transparent 55%),
+    linear-gradient(135deg, var(--color-btn-from), var(--color-nav-to));
+}
+
+/* full-screen photo behind the frame on desktop (blurred + darkened in MobileLayout) */
+@utility photo-backdrop {
+  background:
+    url('/bg.jpg') center / cover no-repeat,
+    linear-gradient(180deg, var(--color-bg-1), var(--color-bg-4));
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  background: linear-gradient(180deg, var(--color-bg-1), var(--color-bg-2), var(--color-bg-3), var(--color-bg-4));
+}
+
+/* the body never scrolls; screens outside the phone frame (admin) scroll inside #root */
+#root {
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+#root::-webkit-scrollbar {
+  display: none;
+}
+
+/* element defaults live in the base layer so Tailwind classes (text-ink, placeholder:…) can override them */
+@layer base {
+  input,
+  select {
+    color: #fff;
+  }
+  input::placeholder {
+    color: rgb(255 255 255 / 0.7);
+  }
+  option {
+    color: #1f1b4d;
+  }
+  button,
+  a {
+    transition: all 0.2s ease;
+  }
+  button:active,
+  a:active {
+    transform: scale(0.97);
+  }
+}
