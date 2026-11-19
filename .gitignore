@@ -162,3 +162,6 @@ GEMINI.md
 CLAUDE.md
 .cursor/
 __pycache__/
+.venv/
+*.pyc
+.pytest_cache/
