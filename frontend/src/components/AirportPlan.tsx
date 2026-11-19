@@ -1,11 +1,16 @@
-import { memo } from 'react'
-import { places } from '../data/places'
+import { memo, useMemo } from 'react'
 
 /**
  * Static schematic of the terminal on a 1000 × 1400 plan (same layout on every level).
- * Corridors follow the walkable graph in data/places.ts. Zone names, transit symbols and the
- * entrance are HTML overlays in the map page (they take part in the collision layout).
+ * Corridors follow the walkable graph stored in the database (map_nodes / map_edges). Zone names,
+ * transit symbols and the entrance are HTML overlays in the map page (they take part in the collision layout).
  */
+
+export interface GateStub {
+  code: string
+  x: number
+  y: number
+}
 
 const c = {
   outside: 'var(--color-map-outside)',
@@ -38,14 +43,11 @@ const corridors = [
   'M500 1010 V1320 M300 1230 H700 M500 1060 H600 M400 1060 H500',
 ]
 
-/** Jet bridges come straight from the gate data, so numbers and positions always match. */
-const bridges = places
-  .filter((p) => p.kind === 'gate')
-  .map((p) => {
-    const axis = p.x < 500 ? 220 : 780 // concourse centerline
-    const west = p.x < axis
-    return { code: p.name.replace('Porte ', ''), x: west ? axis - 70 - 48 : axis + 70, y: p.y }
-  })
+/** Jet bridge drawn next to a gate (from the API's gate locations, so numbers and positions always match). */
+function bridgeFor(g: GateStub) {
+  const axis = g.x < 500 ? 220 : 780 // concourse centerline
+  return { code: g.code, x: g.x < axis ? axis - 70 - 48 : axis + 70, y: g.y }
+}
 
 /** Parked aircraft on the central apron, nose toward their gate. */
 const parked = [
@@ -59,7 +61,8 @@ const PLANE =
 
 const shopYs = [330, 510]
 
-function AirportPlan({ gateNumbers }: { gateNumbers: boolean }) {
+function AirportPlan({ gateNumbers, gates }: { gateNumbers: boolean; gates: GateStub[] }) {
+  const bridges = useMemo(() => gates.map(bridgeFor), [gates])
   return (
     <svg viewBox="0 0 1000 1400" width={1000} height={1400} className="absolute inset-0 block" aria-hidden>
       <defs>

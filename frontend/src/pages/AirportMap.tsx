@@ -28,26 +28,16 @@ import {
 } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import AirlineLogo from '../components/AirlineLogo'
-import AirportPlan from '../components/AirportPlan'
+import AirportPlan, { type GateStub } from '../components/AirportPlan'
 import PlaceIcon from '../components/PlaceIcon'
+import { ErrorCard, Skeleton } from '../components/States'
 import StatusBadge from '../components/StatusBadge'
 import { ElevatorIcon, EscalatorIcon, StairsIcon } from '../components/icons'
-import { kindStyle, placeTile } from '../components/placeStyle'
-import { flights } from '../data/flights'
-import {
-  ELEVATOR_NODE,
-  LEVELS,
-  type Level,
-  type Place,
-  USER_LEVEL,
-  USER_NODE,
-  getPlace,
-  graphEdges,
-  graphNodes,
-  levelLabel,
-  places,
-} from '../data/places'
-import { type Point, nearestNode, pathLength, shortestPath } from '../lib/route'
+import { type PlaceKind, type ServiceIcon, kindStyle, placeKind, placeTile, serviceIcon } from '../components/placeStyle'
+import { ApiError, getLocation, getLocations, getRoute, getSavedLocations, saveLocation, unsaveLocation } from '../lib/api'
+import { formatHours, formatTime } from '../lib/format'
+import { useApi, useDebounced } from '../lib/useApi'
+import type { FlightSummary, Level, Location, LocationDetail } from '../types'
 
 // ---- layout constants (px in the 390 × 844 frame) ----
 const PLAN_W = 1000
@@ -65,9 +55,40 @@ const MIN_ZOOM = 0.8 // relative to the initial "whole plan" fit
 const MAX_ZOOM = 4
 const FULL_ZOOM = 2 // pins reach 30px, gates show the plane icon, labels appear
 const GATE_NUMBERS_ZOOM = 2.6 // gate numbers printed on the jet bridges
-const METERS_PER_UNIT = 0.4
-const WALK_SPEED = 1.3 // m/s
-const SAVED_KEY = 'cmn.savedPlaces'
+const LEVELS: Level[] = [2, 1, 0]
+/** "Vous êtes ici": the security exit on level 2, default start of GET /navigation/route (part of the plan drawing). */
+const USER = { x: 500, y: 1060 }
+const USER_LEVEL: Level = 2
+
+type Point = { x: number; y: number }
+
+/** A map pin built from an API location (string id for the layout maps and data-pin attributes). */
+interface Place {
+  id: string
+  locationId: number
+  name: string
+  kind: PlaceKind
+  icon: ServiceIcon
+  level: number
+  x: number
+  y: number
+  terminal: string
+}
+
+/** Security checkpoint and entrance are drawn by the plan itself, not as pins. */
+const isPin = (l: Location) => l.locationType !== 'checkpoint' && l.locationType !== 'entrance'
+const toPlace = (l: Location): Place => ({
+  id: String(l.id),
+  locationId: l.id,
+  name: l.name,
+  kind: placeKind(l),
+  icon: serviceIcon(l),
+  level: l.floorLevel,
+  x: l.x,
+  y: l.y,
+  terminal: l.terminal.name,
+})
+const asLevel = (n: number): Level => (n <= 0 ? 0 : n >= 2 ? 2 : 1)
 
 const filters = [
   { key: 'all', label: 'Tout' },
@@ -82,12 +103,6 @@ const matchesFilter = (p: Place, f: FilterKey) =>
   (f === 'gate' && p.kind === 'gate') ||
   (f === 'shop' && (p.kind === 'restaurant' || p.kind === 'boutique')) ||
   (f === 'service' && p.kind === 'service')
-
-const normalize = (s: string) =>
-  s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase()
 
 /** Zone names drawn over the plan (9px caps), shown only where they don't collide. */
 const zones = [
@@ -112,26 +127,18 @@ const ENTRANCE = { x: 500, y: 1381 }
 type View = { x: number; y: number; s: number }
 type SheetState = 'peek' | 'expanded'
 type PinMode = 'full' | 'mini' | 'hidden'
-interface Route {
+interface MapRoute {
   points: Point[]
   meters: number
   minutes: number
-  elevatorTo: Level | null
+  note: string | null
+  /** where the route changes level (elevator or stairs), for the marker */
+  levelChange: Point | null
 }
 
 type Gesture =
   | { mode: 'pan'; startX: number; startY: number; base: View; moved: boolean; pinId: string | null }
   | { mode: 'pinch'; d0: number; mid0: Point; base: View }
-
-function loadSaved(): Set<string> {
-  try {
-    const raw = localStorage.getItem(SAVED_KEY)
-    const ids: unknown = raw ? JSON.parse(raw) : []
-    return new Set(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [])
-  } catch {
-    return new Set()
-  }
-}
 
 /** Keep the plan covering the visible band (or inside it when it is smaller). */
 function clampAxis(t: number, content: number, lo: number, hi: number) {
@@ -313,25 +320,24 @@ function PinLabel({ place, selected }: { place: Place; selected: boolean }) {
 
 // ---------------------------------------------------------------- sheet
 
-function GateFlights({ code }: { code: string }) {
-  const list = flights.filter((f) => f.gate === code).sort((a, b) => a.time.localeCompare(b.time))
+function GateFlights({ flights }: { flights: FlightSummary[] }) {
   return (
     <div className="mt-4 rounded-tile-lg border border-white/80 bg-white/60 p-3">
       <p className="flex items-center gap-2 text-label font-bold">
         <Radio size={16} className="text-green-600" /> Prochains vols
       </p>
-      {list.length === 0 && <p className="mt-2 text-small text-ink-soft">Aucun vol prévu à cette porte aujourd’hui.</p>}
+      {flights.length === 0 && <p className="mt-2 text-small text-ink-soft">Aucun vol prévu à cette porte pour le moment.</p>}
       <ul className="mt-1 divide-y divide-ink/8">
-        {list.map((f) => (
+        {flights.map((f) => (
           <li key={f.id} className="flex items-center gap-3 py-2.5">
-            <AirlineLogo flight={f} size={36} />
+            <AirlineLogo airline={f.airline} size={36} />
             <div className="min-w-0 flex-1">
-              <p className="text-body font-bold">{f.code}</p>
-              <p className="truncate text-small text-ink-soft">{f.direction === 'departure' ? `vers ${f.toCity}` : `de ${f.fromCity}`}</p>
+              <p className="text-body font-bold">{f.flightNumber}</p>
+              <p className="truncate text-small text-ink-soft">{f.direction === 'departure' ? `vers ${f.destination.city}` : `de ${f.origin.city}`}</p>
             </div>
             <div className="flex flex-col items-end gap-1">
               <StatusBadge status={f.status} />
-              <span className="text-label font-bold">{f.time}</span>
+              <span className="text-label font-bold">{formatTime(f.direction === 'departure' ? f.departsAt : f.arrivesAt)}</span>
             </div>
           </li>
         ))}
@@ -340,19 +346,24 @@ function GateFlights({ code }: { code: string }) {
   )
 }
 
-function PlaceInfo({ place }: { place: Place }) {
+function PlaceInfo({ place, detail }: { place: Place; detail: LocationDetail }) {
   return (
     <div className="mt-4 space-y-2 rounded-tile-lg border border-white/80 bg-white/60 p-3 text-body">
       <p className="flex items-center gap-2 font-bold">
         <span className={`h-2.5 w-2.5 rounded-full ${kindStyle[place.kind].pin}`} />
         {kindStyle[place.kind].name}
+        {detail.shop && (
+          <span className={`ml-auto text-small font-bold ${detail.shop.isOpenNow ? 'text-green-700' : 'text-red-700'}`}>
+            {detail.shop.isOpenNow ? 'Ouvert' : 'Fermé'}
+          </span>
+        )}
       </p>
-      {place.hours && (
+      {detail.shop && (
         <p className="flex items-center gap-2 text-ink-soft">
-          <Clock size={16} className="text-primary" /> {place.hours}
+          <Clock size={16} className="text-primary" /> {formatHours(detail.shop.opensAt, detail.shop.closesAt)}
         </p>
       )}
-      {place.description && <p className="text-ink-soft">{place.description}</p>}
+      {detail.description && <p className="text-ink-soft">{detail.description}</p>}
     </div>
   )
 }
@@ -372,22 +383,46 @@ export default function AirportMap() {
   const sheetDrag = useRef<number | null>(null)
   const lastLocateTap = useRef(0)
 
-  // deep link from a flight or a list: /carte?place=gate-B12
-  const [initialPlace] = useState(() => getPlace(params.get('place') ?? ''))
+  // deep link from a flight or a list: /carte?location=<id>
+  const [initialId] = useState(() => Number(params.get('location')) || null)
 
   const [size, setSize] = useState({ w: 0, h: 0 })
-  const [level, setLevel] = useState<Level>(initialPlace?.level ?? USER_LEVEL)
+  const [level, setLevel] = useState<Level>(USER_LEVEL)
   const [filter, setFilter] = useState<FilterKey>('all')
   const [query, setQuery] = useState('')
-  const [selectedId, setSelectedId] = useState<string | null>(initialPlace?.id ?? null)
+  const [selected, setSelected] = useState<Place | null>(null)
   const [sheet, setSheet] = useState<SheetState>('peek')
-  const [route, setRoute] = useState<Route | null>(null)
+  const [route, setRoute] = useState<MapRoute | null>(null)
+  const [routeError, setRouteError] = useState('')
+  const [routing, setRouting] = useState(false)
   const [zoomRel, setZoomRel] = useState(1) // zoom relative to the whole-plan fit, in 0.1 steps (pans don't re-render)
   const [chipsFade, setChipsFade] = useState(false)
-  const [saved, setSaved] = useState<Set<string>>(loadSaved)
+  const savedState = useApi(getSavedLocations, [])
+  // optimistic changes on top of the saved list from the API
+  const [savedOverride, setSavedOverride] = useState<Record<number, boolean>>({})
   const [toast, setToast] = useState('')
 
-  const selected = selectedId ? getPlace(selectedId) : undefined
+  const selectedId = selected?.id ?? null
+
+  // ---- derived lists ----
+  const q = useDebounced(query.trim(), 250)
+  const searchState = useApi(() => (q ? getLocations({ q }) : Promise.resolve([])), [q])
+  const results = useMemo(() => (searchState.data ?? []).filter(isPin).slice(0, 5).map(toPlace), [searchState.data])
+  const resultIds = useMemo(() => new Set(results.map((r) => r.id)), [results])
+  const levelState = useApi(() => getLocations({ level }), [level])
+  const levelPlaces = useMemo(() => (levelState.data ?? []).filter(isPin).map(toPlace), [levelState.data])
+  const visible = useMemo(
+    () => levelPlaces.filter((p) => matchesFilter(p, filter) || p.id === selectedId),
+    [levelPlaces, filter, selectedId],
+  )
+  const gatesState = useApi(() => getLocations({ type: 'gate' }), [])
+  const gateStubs = useMemo<GateStub[]>(
+    () => (gatesState.data ?? []).map((g) => ({ code: g.gateCode ?? g.name, x: g.x, y: g.y })),
+    [gatesState.data],
+  )
+  const detailId = selected?.locationId ?? null
+  const detailState = useApi(() => (detailId ? getLocation(detailId) : Promise.resolve(null)), [detailId])
+
   const sheetH = selected ? (sheet === 'expanded' ? Math.round(size.h * 0.55) : PEEK) : 0
   const bandBottom = (h: number, sh: number) => (sh ? h - SHEET_BOTTOM - sh - 8 : h - FIT_BOTTOM)
 
@@ -482,20 +517,20 @@ export default function AirportMap() {
 
   // ---- selection ----
   const select = useCallback(
-    (id: string) => {
-      const p = getPlace(id)
-      if (!p) return
-      setSelectedId(id)
+    (p: Place) => {
+      setSelected(p)
       setSheet('peek')
       setRoute(null)
+      setRouteError('')
       setQuery('') // selecting a place (pin or search result) closes the search dropdown
       flyTo(p, FULL_ZOOM, PEEK)
     },
     [flyTo],
   )
   const deselect = useCallback(() => {
-    setSelectedId(null)
+    setSelected(null)
     setRoute(null)
+    setRouteError('')
   }, [])
 
   const changeLevel = (l: Level) => {
@@ -521,8 +556,15 @@ export default function AirportMap() {
     }
     initialized.current = true
     apply(clampView(fitAllView(), 0))
-    if (initialPlace) flyTo(initialPlace, FULL_ZOOM, PEEK)
-  }, [size, apply, clampView, flyTo, initialPlace])
+    if (initialId) {
+      getLocation(initialId)
+        .then((loc) => {
+          setLevel(asLevel(loc.floorLevel))
+          select(toPlace(loc))
+        })
+        .catch(() => setToast('Lieu introuvable sur le plan.'))
+    }
+  }, [size, apply, clampView, flyTo, initialId, select])
 
   // re-clamp when the sheet opens, grows or closes
   useEffect(() => {
@@ -619,7 +661,8 @@ export default function AirportMap() {
     const g = gesture.current
     pointers.current.delete(e.pointerId)
     if (g?.mode === 'pan' && !g.moved && pointers.current.size === 0) {
-      if (g.pinId) select(g.pinId)
+      const pin = g.pinId ? visible.find((p) => p.id === g.pinId) : undefined
+      if (pin) select(pin)
       else deselect()
     }
     startGesture()
@@ -632,40 +675,35 @@ export default function AirportMap() {
   }
 
   // ---- route ----
-  const startRoute = () => {
+  const startRoute = async () => {
     if (!selected) return
-    const goal = nearestNode(graphNodes, selected)
-    const cross = selected.level !== USER_LEVEL
-    const legs = cross
-      ? [shortestPath(graphNodes, graphEdges, USER_NODE, ELEVATOR_NODE), shortestPath(graphNodes, graphEdges, ELEVATOR_NODE, goal.id)]
-      : [shortestPath(graphNodes, graphEdges, USER_NODE, goal.id)]
-    const nodes = legs.flatMap((leg, i) => (leg ? (i ? leg.slice(1) : leg) : []))
-    const points: Point[] = [...nodes, { x: selected.x, y: selected.y }].filter(
-      (p, i, all) => i === 0 || p.x !== all[i - 1].x || p.y !== all[i - 1].y,
-    )
-    const meters = Math.round((pathLength(points) * METERS_PER_UNIT) / 10) * 10
-    setRoute({
-      points,
-      meters,
-      minutes: Math.max(1, Math.round(meters / WALK_SPEED / 60)),
-      elevatorTo: cross ? selected.level : null,
-    })
-    fitPoints(points, sheetH)
+    setRouting(true)
+    setRouteError('')
+    try {
+      const r = await getRoute(selected.locationId)
+      const points = r.points.map((p) => ({ x: p.x, y: p.y }))
+      const change = r.points.findIndex((p, i) => i > 0 && p.floorLevel !== r.points[i - 1].floorLevel)
+      setRoute({ points, meters: r.distanceMeters, minutes: r.minutes, note: r.note, levelChange: change > 0 ? points[change - 1] : null })
+      fitPoints(points, sheetH)
+    } catch (e) {
+      setRouteError(e instanceof ApiError ? e.message : 'Itinéraire indisponible.')
+    } finally {
+      setRouting(false)
+    }
   }
 
   // ---- save / share ----
-  const toggleSaved = (id: string) => {
-    setSaved((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      try {
-        localStorage.setItem(SAVED_KEY, JSON.stringify([...next]))
-      } catch {
-        /* storage unavailable: keep the in-memory state */
-      }
-      return next
-    })
+  const isSavedId = (id: number) => savedOverride[id] ?? (savedState.data ?? []).some((l) => l.id === id)
+  const toggleSaved = async (id: number) => {
+    const next = !isSavedId(id)
+    setSavedOverride((o) => ({ ...o, [id]: next }))
+    try {
+      if (next) await saveLocation(id)
+      else await unsaveLocation(id)
+    } catch (e) {
+      setSavedOverride((o) => ({ ...o, [id]: !next }))
+      showToast(e instanceof ApiError ? e.message : 'Action impossible.')
+    }
   }
 
   const showToast = (text: string) => {
@@ -674,7 +712,7 @@ export default function AirportMap() {
   }
 
   const share = async (p: Place) => {
-    const url = `${window.location.origin}/carte?place=${p.id}`
+    const url = `${window.location.origin}/carte?location=${p.locationId}`
     try {
       if (typeof navigator.share === 'function') await navigator.share({ title: p.name, url })
       else {
@@ -686,28 +724,17 @@ export default function AirportMap() {
     }
   }
 
-  // ---- derived lists ----
-  const q = normalize(query.trim())
-  const results = useMemo(() => (q ? places.filter((p) => normalize(p.name).includes(q)).slice(0, 5) : []), [q])
-  const resultIds = useMemo(() => new Set(results.map((r) => r.id)), [results])
-  const visible = useMemo(
-    () => places.filter((p) => p.level === level && (matchesFilter(p, filter) || p.id === selectedId)),
-    [level, filter, selectedId],
-  )
-  const userNode = graphNodes.find((n) => n.id === USER_NODE)
-  const elevatorNode = graphNodes.find((n) => n.id === ELEVATOR_NODE)
-
   const fitS = size.w ? Math.min((size.w - RIGHT_RAIL - 16) / PLAN_W, (size.h - FIT_BOTTOM - TOP_BAND) / PLAN_H) : 0
   const mapLayout = useMemo(
-    () => layoutMap(visible, zoomRel * fitS, zoomRel, selectedId, resultIds, level, userNode),
-    [visible, zoomRel, fitS, selectedId, resultIds, level, userNode],
+    () => layoutMap(visible, zoomRel * fitS, zoomRel, selectedId, resultIds, level, USER),
+    [visible, zoomRel, fitS, selectedId, resultIds, level],
   )
 
   const chooseResult = (p: Place) => {
     setQuery('')
     ;(document.activeElement as HTMLElement | null)?.blur()
-    setLevel(p.level)
-    select(p.id)
+    setLevel(asLevel(p.level))
+    select(p)
   }
 
   const locate = () => {
@@ -719,10 +746,8 @@ export default function AirportMap() {
       return
     }
     lastLocateTap.current = now
-    if (userNode) {
-      changeLevel(USER_LEVEL)
-      flyTo(userNode, 2.2, sheetH)
-    }
+    changeLevel(USER_LEVEL)
+    flyTo(USER, 2.2, sheetH)
   }
 
   // sheet handle: a tap toggles (onClick, also works with the keyboard); a vertical drag expands, collapses or closes
@@ -752,7 +777,7 @@ export default function AirportMap() {
 
   const expanded = !!selected && sheet === 'expanded'
   const controlsBottom = sheetH ? SHEET_BOTTOM + sheetH + GAP : CONTROLS_BOTTOM
-  const isSaved = selected ? saved.has(selected.id) : false
+  const isSaved = selected ? isSavedId(selected.locationId) : false
   const counterScale = 'translate(-50%, -50%) scale(var(--inv))'
 
   return (
@@ -769,7 +794,7 @@ export default function AirportMap() {
         onDoubleClick={onDoubleClick}
       >
         <div ref={layerRef} className="absolute left-0 top-0 origin-top-left will-change-transform" style={{ width: PLAN_W, height: PLAN_H }}>
-          <AirportPlan gateNumbers={zoomRel >= GATE_NUMBERS_ZOOM} />
+          <AirportPlan gateNumbers={zoomRel >= GATE_NUMBERS_ZOOM} gates={gateStubs} />
 
           {/* zone names */}
           {zones
@@ -820,25 +845,24 @@ export default function AirportMap() {
             </svg>
           )}
 
-          {route?.elevatorTo != null && elevatorNode && (
+          {route?.levelChange && (
             <span
               className="map-pin absolute flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-primary text-white shadow-md"
-              style={{ left: elevatorNode.x, top: elevatorNode.y, transform: counterScale, zIndex: 25 }}
+              style={{ left: route.levelChange.x, top: route.levelChange.y, transform: counterScale, zIndex: 25 }}
             >
               <ArrowUpDown size={16} strokeWidth={2.5} />
             </span>
           )}
 
           {/* "Vous êtes ici": blue dot with a frosted bubble above it */}
-          {userNode && (
             <>
-              <span className="map-pin pointer-events-none absolute flex h-[18px] w-[18px] items-center justify-center" style={{ left: userNode.x, top: userNode.y, transform: counterScale, zIndex: 20 }}>
+              <span className="map-pin pointer-events-none absolute flex h-[18px] w-[18px] items-center justify-center" style={{ left: USER.x, top: USER.y, transform: counterScale, zIndex: 20 }}>
                 <span className="absolute h-full w-full animate-ping rounded-full bg-pin-gate/40" />
                 <span className="relative h-[18px] w-[18px] rounded-full border-[3px] border-white bg-pin-gate shadow-md" />
               </span>
               <span
                 className="map-pin pointer-events-none absolute"
-                style={{ left: userNode.x, top: userNode.y, zIndex: 21, transformOrigin: '50% 100%', transform: 'translate(-50%, -100%) scale(var(--inv)) translateY(-15px)' }}
+                style={{ left: USER.x, top: USER.y, zIndex: 21, transformOrigin: '50% 100%', transform: 'translate(-50%, -100%) scale(var(--inv)) translateY(-15px)' }}
               >
                 <span className="relative block whitespace-nowrap rounded-full border border-white bg-white/90 px-2 py-0.5 text-[10px] font-bold text-pin-gate shadow-md backdrop-blur-md">
                   {userBubbleText(level)}
@@ -846,7 +870,6 @@ export default function AirportMap() {
                 <span className="absolute left-1/2 top-full -mt-[5px] h-2.5 w-2.5 -translate-x-1/2 rotate-45 border-b border-r border-white bg-white/90" />
               </span>
             </>
-          )}
 
           {visible.map((p) => {
             const mode = mapLayout.modes.get(p.id) ?? 'hidden'
@@ -894,7 +917,7 @@ export default function AirportMap() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-body font-bold">{p.name}</span>
                     <span className="block text-small text-ink-soft">
-                      {p.terminal} • {levelLabel(p.level)}
+                      {p.terminal} • Niveau {p.level}
                     </span>
                   </span>
                 </button>
@@ -902,14 +925,15 @@ export default function AirportMap() {
             ))}
           </ul>
         )}
-        {q && results.length === 0 && (
+        {q && searchState.error && <ErrorCard message={searchState.error.message} onRetry={searchState.reload} className="mt-2" />}
+        {q && searchState.data && results.length === 0 && (
           <p className="glass-light mt-2 rounded-tile-lg bg-white/90 px-4 py-3 text-body text-ink-soft">Aucun lieu trouvé.</p>
         )}
 
         {/* chips stay mounted (hidden while searching) so the fade observer keeps working */}
         <div
           ref={chipsRef}
-          className={`no-scrollbar mt-2 flex gap-2 overflow-x-auto ${q ? 'hidden' : ''}`}
+          className={`no-scrollbar mt-2 flex gap-2 overflow-x-auto ${query.trim() ? 'hidden' : ''}`}
           style={chipsFade ? { maskImage: 'linear-gradient(to right, #000 82%, transparent)', WebkitMaskImage: 'linear-gradient(to right, #000 82%, transparent)' } : undefined}
         >
           {filters.map((f) => (
@@ -995,7 +1019,7 @@ export default function AirportMap() {
               <div className="min-w-0 flex-1">
                 <h2 className="truncate text-dest font-extrabold leading-tight">{selected.name}</h2>
                 <p className="text-label text-ink-soft">
-                  {levelLabel(selected.level)}, {selected.terminal}
+                  Niveau {selected.level}, {selected.terminal}
                 </p>
               </div>
               <button type="button" aria-label="Partager" onClick={() => share(selected)} className="flex h-9 w-9 items-center justify-center rounded-full bg-ink/8">
@@ -1011,9 +1035,9 @@ export default function AirportMap() {
                 <p className="flex items-center gap-2 text-strong font-bold">
                   <Footprints size={18} className="text-primary" />À pied • {route.minutes} min • {route.meters} m
                 </p>
-                {route.elevatorTo !== null && (
+                {route.note && (
                   <p className="mt-1.5 flex items-center gap-2 rounded-chip bg-primary/10 px-3 py-2 text-label font-semibold">
-                    <ArrowUpDown size={16} className="text-primary" /> Prenez l’ascenseur jusqu’au niveau {route.elevatorTo}
+                    <ArrowUpDown size={16} className="text-primary" /> {route.note}
                   </p>
                 )}
                 <button type="button" onClick={() => setRoute(null)} className="mt-3 h-12 w-full rounded-full bg-linear-to-r from-btn-from to-btn-mid text-body font-bold text-white shadow-search">
@@ -1025,13 +1049,14 @@ export default function AirportMap() {
                 <button
                   type="button"
                   onClick={startRoute}
+                  disabled={routing}
                   className="flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-linear-to-r from-btn-from to-btn-mid text-body font-bold text-white shadow-search"
                 >
-                  <Navigation size={18} fill="currentColor" /> Itinéraire
+                  <Navigation size={18} fill="currentColor" /> {routing ? 'Calcul…' : 'Itinéraire'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => toggleSaved(selected.id)}
+                  onClick={() => toggleSaved(selected.locationId)}
                   aria-pressed={isSaved}
                   className="flex h-12 flex-1 items-center justify-center gap-2 rounded-full border border-white/90 bg-white/70 text-body font-bold text-btn-from shadow-sm"
                 >
@@ -1041,7 +1066,15 @@ export default function AirportMap() {
               </div>
             )}
 
-            {selected.kind === 'gate' ? <GateFlights code={selected.name.replace('Porte ', '')} /> : <PlaceInfo place={selected} />}
+            {routeError && <p role="alert" className="mt-3 rounded-chip bg-danger/12 px-3 py-2 text-label font-semibold text-red-700">{routeError}</p>}
+            {detailState.loading && <Skeleton className="mt-4 h-28 rounded-tile-lg" />}
+            {detailState.error && <ErrorCard message={detailState.error.message} onRetry={detailState.reload} className="mt-4" />}
+            {detailState.data &&
+              (selected.kind === 'gate' ? (
+                <GateFlights flights={detailState.data.upcomingFlights} />
+              ) : (
+                <PlaceInfo place={selected} detail={detailState.data} />
+              ))}
           </div>
         </section>
       )}

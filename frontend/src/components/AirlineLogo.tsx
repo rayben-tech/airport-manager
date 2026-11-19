@@ -1,19 +1,19 @@
-import type { Flight } from '../data/flights'
+import type { Airline } from '../types'
 
 /** Brand-colored airline badge built from the IATA code (no external image needed). */
-export default function AirlineLogo({ flight, size = 40 }: { flight: Flight; size?: number }) {
+export default function AirlineLogo({ airline, size = 40 }: { airline: Airline; size?: number }) {
   return (
     <div
       className="flex shrink-0 items-center justify-center rounded-xl font-extrabold tracking-tight text-white shadow-sm"
       style={{
-        background: `linear-gradient(135deg, ${flight.airlineColor}, ${flight.airlineColor}cc)`,
+        background: `linear-gradient(135deg, ${airline.brandColor}, ${airline.brandColor}cc)`,
         width: size,
         height: size,
         fontSize: size / 2.8,
       }}
-      title={flight.airline}
+      title={airline.name}
     >
-      {flight.code.slice(0, 2)}
+      {airline.iataCode}
     </div>
   )
 }

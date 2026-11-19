@@ -1,6 +1,7 @@
-import { Bell, Plane, Search, SlidersHorizontal } from 'lucide-react'
+import { Bell, Plane, PlaneTakeoff, Search, SlidersHorizontal } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { EmptyState, ErrorCard, Skeleton } from '../components/States'
 import {
   BriefcaseDuo,
   CalendarDuo,
@@ -10,8 +11,20 @@ import {
   PlaneDuo,
   ScanQrDuo,
 } from '../components/icons'
-import { getFlight } from '../data/flights'
-import { passenger } from '../data/passenger'
+import { getNextFlight, getNotifications, getProfile } from '../lib/api'
+import { STATUS_LABEL, formatTime } from '../lib/format'
+import { useApi } from '../lib/useApi'
+import type { FlightStatus } from '../types'
+
+/** Solid status pill colors for the flight card. */
+const STATUS_PILL: Record<FlightStatus, string> = {
+  on_time: 'bg-success-bg',
+  boarding: 'bg-success-bg',
+  delayed: 'bg-warning-bg',
+  cancelled: 'bg-danger',
+  departed: 'bg-ink-soft',
+  landed: 'bg-ink-soft',
+}
 
 type Tile = { to: string; label: string; icon: ComponentType<{ size?: number; className?: string }> }
 
@@ -41,7 +54,12 @@ function QuickTile({ to, label, icon: Icon }: Tile) {
 
 export default function Home() {
   const navigate = useNavigate()
-  const flight = getFlight(passenger.nextFlightId)
+  const profile = useApi(getProfile, [])
+  const next = useApi(getNextFlight, [])
+  const notifications = useApi(getNotifications, [])
+  const unread = notifications.data?.filter((n) => !n.isRead).length ?? 0
+  const flight = next.data?.flight
+  const noUpcoming = next.error?.status === 404
 
   return (
     <div className="px-5 pt-10 text-ink">
@@ -51,16 +69,20 @@ export default function Home() {
         </div>
         <Link
           to="/parametres"
-          aria-label="Notifications"
+          aria-label={unread ? `Notifications (${unread} non lues)` : 'Notifications'}
           className="glass-light relative flex h-11 w-11 items-center justify-center rounded-full"
         >
           <Bell size={22} strokeWidth={2} className="text-ink" />
-          <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-danger ring-2 ring-white" />
+          {unread > 0 && <span className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-danger ring-2 ring-white" />}
         </Link>
       </div>
 
       <div className="mt-7 px-1">
-        <h1 className="text-greeting font-bold leading-tight">Bonjour {passenger.firstName} !</h1>
+        {profile.data || profile.error ? (
+          <h1 className="text-greeting font-bold leading-tight">Bonjour{profile.data ? ` ${profile.data.firstName}` : ''} !</h1>
+        ) : (
+          <Skeleton className="h-8 w-52 rounded-full" />
+        )}
         <p className="mt-0.5 flex items-center gap-1.5 text-body font-medium">
           Bon voyage <Plane size={16} className="text-sky" fill="currentColor" />
         </p>
@@ -76,21 +98,36 @@ export default function Home() {
         <SlidersHorizontal size={20} className="text-ink" />
       </button>
 
+      {next.loading && <Skeleton className="mt-3 h-[140px] rounded-panel" />}
+      {noUpcoming && (
+        <EmptyState
+          icon={PlaneTakeoff}
+          title="Aucun vol à venir"
+          text="Vos prochains vols apparaîtront ici."
+          className="mt-3 rounded-panel"
+          action={
+            <Link to="/recherche-vol" className="mt-3 text-label font-bold text-primary">
+              Rechercher un vol →
+            </Link>
+          }
+        />
+      )}
+      {next.error && !noUpcoming && <ErrorCard message={next.error.message} onRetry={next.reload} className="mt-3 rounded-panel" />}
       {flight && (
         <Link to={`/vols/${flight.id}`} className="glass-light mt-3 block rounded-panel p-4">
           <div className="flex items-end justify-between">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-success-bg px-2.5 py-1 text-small font-bold text-white">
+            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-small font-bold text-white ${STATUS_PILL[flight.status]}`}>
               <span className="h-1.5 w-1.5 rounded-full bg-white" />
-              {flight.status}
+              {STATUS_LABEL[flight.status]}
             </span>
             <span className="text-small font-semibold">Départ</span>
           </div>
           <div className="mt-1 flex items-baseline justify-between">
-            <p className="text-flight-lg font-bold leading-tight">{flight.code}</p>
-            <p className="text-flight font-bold leading-tight">{flight.time}</p>
+            <p className="text-flight-lg font-bold leading-tight">{flight.flightNumber}</p>
+            <p className="text-flight font-bold leading-tight">{formatTime(flight.departsAt)}</p>
           </div>
           <p className="text-label text-ink-soft/80">
-            {flight.fromCity} ({flight.fromCode}) → {flight.toCity} ({flight.toCode})
+            {flight.origin.city} ({flight.origin.iataCode}) → {flight.destination.city} ({flight.destination.iataCode})
           </p>
           <p className="mt-3 text-center text-body font-bold text-primary">Voir les détails →</p>
         </Link>

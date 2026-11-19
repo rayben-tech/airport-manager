@@ -1,21 +1,15 @@
-import { ArrowLeft, ArrowRight, ChevronRight, MapPin, Plane, SlidersHorizontal } from 'lucide-react'
-import { type ComponentType, type ReactNode, useState } from 'react'
+import { ArrowLeft, ArrowRight, ChevronRight, MapPin, Plane, SlidersHorizontal, Tag } from 'lucide-react'
+import { type ComponentType, type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { EmptyState, ErrorCard, Skeleton } from '../components/States'
 import { CalendarDuo, PlaneLandingDuo, PlaneTakeoffDuo } from '../components/icons'
-import { flights } from '../data/flights'
+import { getFlights, getNextFlight, getOffers } from '../lib/api'
+import { formatDate, formatPrice } from '../lib/format'
+import { useApi } from '../lib/useApi'
+import type { Offer } from '../types'
 
-const destinations = [
-  ...new Map(
-    flights.filter((f) => f.direction === 'departure').map((f) => [f.toCode, { code: f.toCode, city: f.toCity }]),
-  ).values(),
-]
-
-const offers = [
-  { city: 'Paris', price: '1 850 MAD', photo: '/offers/paris.jpg' },
-  { city: 'Istanbul', price: '2 150 MAD', photo: '/offers/istanbul.jpg' },
-  { city: 'Dubai', price: '3 400 MAD', photo: '/offers/dubai.jpg' },
-  { city: 'Madrid', price: '1 290 MAD', photo: '/offers/madrid.jpg' },
-]
+const HOME = { code: 'CMN', city: 'Casablanca' }
+const vols = (destination: string) => `/vols?${new URLSearchParams({ origin: HOME.code, destination })}`
 
 const GAP = 16
 const roundGlass =
@@ -47,8 +41,11 @@ function RouteRow({
   )
 }
 
-function OfferCard({ city, price, photo, onOpen }: (typeof offers)[number] & { onOpen: () => void }) {
+function OfferCard({ offer, onOpen }: { offer: Offer; onOpen: () => void }) {
   const [broken, setBroken] = useState(false)
+  const city = offer.destination.city
+  const photo = offer.imagePath
+  const price = formatPrice(offer.priceMad)
   return (
     <div className="relative h-32 w-full shrink-0 snap-start overflow-hidden rounded-3xl shadow-glass-light">
       {broken ? (
@@ -83,9 +80,20 @@ function OfferCard({ city, price, photo, onOpen }: (typeof offers)[number] & { o
 export default function FlightSearchForm() {
   const navigate = useNavigate()
   const [roundTrip, setRoundTrip] = useState(false)
-  const [dest, setDest] = useState('CDG')
+  const [picked, setPicked] = useState<string | null>(null)
   const [page, setPage] = useState(0)
-  const city = destinations.find((d) => d.code === dest)?.city ?? ''
+  const offers = useApi(getOffers, [])
+  const departures = useApi(() => getFlights({ direction: 'departure', pageSize: 200 }), [])
+  const next = useApi(getNextFlight, [])
+
+  // destinations served from CMN, from the flights in the database
+  const destinations = useMemo(() => {
+    const byCode = new Map((departures.data?.items ?? []).map((f) => [f.destination.iataCode, f.destination.city]))
+    return [...byCode].map(([code, city]) => ({ code, city })).sort((a, b) => a.city.localeCompare(b.city, 'fr'))
+  }, [departures.data])
+  const dest = picked ?? next.data?.flight.destination.iataCode ?? destinations[0]?.code ?? ''
+  const city = destinations.find((d) => d.code === dest)?.city ?? next.data?.flight.destination.city ?? ''
+  const dateLabel = next.data ? formatDate(next.data.flight.departsAt) : 'Toutes les dates'
 
   const seg = (active: boolean) =>
     `h-[52px] flex-1 rounded-full text-body ${
@@ -116,12 +124,13 @@ export default function FlightSearchForm() {
       </div>
 
       <div className="glass-light mt-4 divide-y divide-ink/8 rounded-panel">
-        <RouteRow icon={PlaneTakeoffDuo} label="Départ" value="Casablanca (CMN)" />
-        <RouteRow icon={PlaneLandingDuo} label="Arrivée" value={`${city} (${dest})`}>
+        <RouteRow icon={PlaneTakeoffDuo} label="Départ" value={`${HOME.city} (${HOME.code})`} />
+        <RouteRow icon={PlaneLandingDuo} label="Arrivée" value={dest ? `${city} (${dest})` : departures.loading ? 'Chargement…' : 'Aucune destination'}>
           <select
             value={dest}
-            onChange={(e) => setDest(e.target.value)}
+            onChange={(e) => setPicked(e.target.value)}
             aria-label="Arrivée"
+            disabled={!destinations.length}
             className="absolute inset-0 cursor-pointer opacity-0"
           >
             {destinations.map((d) => (
@@ -131,12 +140,12 @@ export default function FlightSearchForm() {
             ))}
           </select>
         </RouteRow>
-        <RouteRow icon={CalendarDuo} label="Date" value="18 Nov. 2026" />
+        <RouteRow icon={CalendarDuo} label="Date" value={dateLabel} />
       </div>
 
       <button
         type="button"
-        onClick={() => navigate('/vols')}
+        onClick={() => navigate(dest ? vols(dest) : '/vols')}
         className="mt-4 flex h-14 w-full items-center justify-center gap-2.5 rounded-full bg-linear-to-r from-btn-from to-btn-mid text-section font-bold text-white shadow-search"
       >
         Rechercher <Plane size={20} fill="currentColor" />
@@ -149,23 +158,30 @@ export default function FlightSearchForm() {
         </button>
       </div>
 
-      <div
-        className="no-scrollbar mt-3 flex snap-x snap-mandatory overflow-x-auto"
-        style={{ gap: GAP }}
-        onScroll={(e) => setPage(Math.round(e.currentTarget.scrollLeft / (e.currentTarget.clientWidth + GAP)))}
-      >
-        {offers.map((o) => (
-          <OfferCard key={o.city} {...o} onOpen={() => navigate('/vols')} />
-        ))}
-      </div>
-      <div className="mt-3 flex justify-center gap-1.5">
-        {offers.map((o, i) => (
-          <span
-            key={o.city}
-            className={`h-1.5 rounded-full transition-all ${i === page ? 'w-[18px] bg-primary' : 'w-1.5 bg-primary/40'}`}
-          />
-        ))}
-      </div>
+      {offers.loading && <Skeleton className="mt-3 h-32 rounded-3xl" />}
+      {offers.error && <ErrorCard message={offers.error.message} onRetry={offers.reload} className="mt-3" />}
+      {offers.data?.length === 0 && <EmptyState icon={Tag} title="Aucune offre pour le moment" className="mt-3" />}
+      {offers.data && offers.data.length > 0 && (
+        <>
+          <div
+            className="no-scrollbar mt-3 flex snap-x snap-mandatory overflow-x-auto"
+            style={{ gap: GAP }}
+            onScroll={(e) => setPage(Math.round(e.currentTarget.scrollLeft / (e.currentTarget.clientWidth + GAP)))}
+          >
+            {offers.data.map((o) => (
+              <OfferCard key={o.id} offer={o} onOpen={() => navigate(vols(o.destination.iataCode))} />
+            ))}
+          </div>
+          <div className="mt-3 flex justify-center gap-1.5">
+            {offers.data.map((o, i) => (
+              <span
+                key={o.id}
+                className={`h-1.5 rounded-full transition-all ${i === page ? 'w-[18px] bg-primary' : 'w-1.5 bg-primary/40'}`}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

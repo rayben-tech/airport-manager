@@ -7,28 +7,41 @@ import {
   DoorOpen,
   Plane,
   Ticket,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import { EmptyState, ErrorCard, Skeleton } from '../components/States'
 import { SuitcaseSolid } from '../components/icons'
-import { type Flight, getFlight } from '../data/flights'
-import { type Trip, type TripTab, trips } from '../data/passenger'
+import { getBookings } from '../lib/api'
+import { formatDayMonth, formatTime, terminalNumber } from '../lib/format'
+import { useApi } from '../lib/useApi'
+import type { BaggageItem, Booking, BookingTab, FlightSummary } from '../types'
 
-const tabs: { key: TripTab; label: string }[] = [
+const tabs: { key: BookingTab; label: string }[] = [
   { key: 'upcoming', label: 'À venir' },
   { key: 'past', label: 'Passés' },
   { key: 'cancelled', label: 'Annulés' },
 ]
 
-/** Pill (top right) and status line (under the route) for a trip. */
-function tripStatus(trip: Trip, flight: Flight) {
-  if (trip.tab === 'cancelled') return { label: 'Annulé', pill: 'bg-danger/20 text-red-700', line: 'text-red-700', dot: 'bg-danger' }
-  if (trip.tab === 'past') return { label: 'Terminé', pill: 'bg-ink/10 text-ink-soft', line: 'text-ink-soft', dot: 'bg-ink-soft' }
-  if (flight.status === 'Retardé')
+const EMPTY: Record<BookingTab, string> = {
+  upcoming: 'Aucun vol à venir.',
+  past: 'Aucun vol passé.',
+  cancelled: 'Aucune réservation annulée.',
+}
+
+/** Pill (top right) and status line (under the route) for a booking. */
+function bookingStatus(tab: BookingTab, flight: FlightSummary) {
+  if (tab === 'cancelled' || flight.status === 'cancelled')
+    return { label: 'Annulé', pill: 'bg-danger/20 text-red-700', line: 'text-red-700', dot: 'bg-danger' }
+  if (tab === 'past') return { label: 'Terminé', pill: 'bg-ink/10 text-ink-soft', line: 'text-ink-soft', dot: 'bg-ink-soft' }
+  if (flight.status === 'delayed')
     return { label: 'Retardé', pill: 'bg-warning-bg/20 text-orange-700', line: 'text-orange-700', dot: 'bg-warning-bg' }
   return { label: "À l'heure", pill: 'bg-success-bg/[0.22] text-green-700', line: 'text-green-600', dot: 'bg-success-bg' }
 }
+
+const kg = (n: number) => `${String(n).replace('.', ',')} kg`
 
 function DetailRow({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
@@ -40,7 +53,9 @@ function DetailRow({ icon: Icon, label, value }: { icon: LucideIcon; label: stri
   )
 }
 
-function BagRow({ label, weight, note }: { label: string; weight: string; note?: string }) {
+function BagRow({ item, belt }: { item: BaggageItem; belt: number | null }) {
+  const label = item.label ?? (item.bagType === 'cabin' ? 'Bagage cabine' : 'Bagage en soute')
+  const note = item.sizeCm ? `(${item.sizeCm.replace(/\s*x\s*/g, ' × ')} cm)` : item.bagType === 'checked' && belt ? `(Tapis ${belt})` : null
   return (
     <li className="flex items-center gap-3">
       <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-chip bg-linear-to-br from-primary to-bag-to text-white">
@@ -48,17 +63,16 @@ function BagRow({ label, weight, note }: { label: string; weight: string; note?:
       </span>
       <span className="flex-1 text-body font-semibold">{label}</span>
       <span className="text-right">
-        <span className="block text-strong font-bold">{weight}</span>
+        <span className="block text-strong font-bold">{kg(item.weightKg)}</span>
         {note && <span className="block text-tiny text-ink-soft">{note}</span>}
       </span>
     </li>
   )
 }
 
-function Expanded({ flight }: { flight: Flight }) {
+function Expanded({ booking }: { booking: Booking }) {
   const [bagsOpen, setBagsOpen] = useState(true)
-  const departure = flight.direction === 'departure'
-  const terminal = (departure ? flight.fromTerminal : flight.toTerminal).replace('Terminal ', '')
+  const flight = booking.flight
 
   return (
     <div className="mt-3 space-y-3">
@@ -67,10 +81,10 @@ function Expanded({ flight }: { flight: Flight }) {
           <Plane size={18} className="text-primary" fill="currentColor" /> Détails du vol
         </p>
         <ul>
-          <DetailRow icon={Clock} label="Départ" value={`${flight.departureTime} - ${flight.fromCode}`} />
-          <DetailRow icon={Clock} label="Arrivée" value={`${flight.arrivalTime} - ${flight.toCode}`} />
-          <DetailRow icon={Building2} label="Terminal" value={terminal} />
-          <DetailRow icon={DoorOpen} label="Porte" value={flight.gate} />
+          <DetailRow icon={Clock} label="Départ" value={`${formatTime(flight.departsAt)} - ${flight.origin.iataCode}`} />
+          <DetailRow icon={Clock} label="Arrivée" value={`${formatTime(flight.arrivesAt)} - ${flight.destination.iataCode}`} />
+          <DetailRow icon={Building2} label="Terminal" value={terminalNumber(flight.terminalName)} />
+          <DetailRow icon={DoorOpen} label="Porte" value={flight.gateCode ?? '—'} />
         </ul>
       </div>
 
@@ -85,12 +99,16 @@ function Expanded({ flight }: { flight: Flight }) {
           <span className="flex-1">Bagages</span>
           <ChevronDown size={18} className={`transition-transform ${bagsOpen ? '' : '-rotate-90'}`} />
         </button>
-        {bagsOpen && (
-          <ul className="mt-3 space-y-3">
-            <BagRow label="Bagage cabine" weight="8 kg max" note="(55 × 35 × 25 cm)" />
-            <BagRow label="Bagage en soute" weight="23 kg max" note={flight.belt ? `(Tapis ${flight.belt})` : undefined} />
-          </ul>
-        )}
+        {bagsOpen &&
+          (booking.baggageItems.length ? (
+            <ul className="mt-3 space-y-3">
+              {booking.baggageItems.map((item) => (
+                <BagRow key={item.id} item={item} belt={flight.beltNumber} />
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-label text-ink-soft">Aucun bagage enregistré pour ce vol.</p>
+          ))}
       </div>
 
       <Link
@@ -103,10 +121,10 @@ function Expanded({ flight }: { flight: Flight }) {
   )
 }
 
-function TripCard({ trip, open, onToggle }: { trip: Trip; open: boolean; onToggle: () => void }) {
-  const flight = getFlight(trip.flightId)
-  if (!flight) return null
-  const status = tripStatus(trip, flight)
+function TripCard({ booking, tab, open, onToggle }: { booking: Booking; tab: BookingTab; open: boolean; onToggle: () => void }) {
+  const flight = booking.flight
+  const status = bookingStatus(tab, flight)
+  const { day, month } = formatDayMonth(flight.departsAt)
   const roundBtn = 'flex h-8 w-8 items-center justify-center rounded-full bg-white/70 text-ink'
 
   return (
@@ -114,13 +132,13 @@ function TripCard({ trip, open, onToggle }: { trip: Trip; open: boolean; onToggl
       <div className="flex items-start gap-3">
         <button type="button" onClick={onToggle} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-3 text-left">
           <span className="flex h-16 w-14 shrink-0 flex-col items-center justify-center rounded-control border border-white/80 bg-white/70">
-            <span className="text-heading font-extrabold leading-none">{trip.day}</span>
-            <span className="mt-1 text-small font-semibold">{trip.month}</span>
+            <span className="text-heading font-extrabold leading-none">{day}</span>
+            <span className="mt-1 text-small font-semibold">{month}</span>
           </span>
           <span className="min-w-0">
-            <span className="block text-title font-bold leading-tight">{flight.code}</span>
+            <span className="block text-title font-bold leading-tight">{flight.flightNumber}</span>
             <span className="block truncate text-label text-ink-soft">
-              {flight.fromCity} → {flight.toCity}
+              {flight.origin.city} → {flight.destination.city}
             </span>
             <span className={`mt-0.5 flex items-center gap-1.5 text-small font-semibold ${status.line}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} />
@@ -143,15 +161,24 @@ function TripCard({ trip, open, onToggle }: { trip: Trip; open: boolean; onToggl
           )}
         </div>
       </div>
-      {open && <Expanded flight={flight} />}
+      {open && <Expanded booking={booking} />}
     </article>
   )
 }
 
 export default function MyFlights() {
-  const [tab, setTab] = useState<TripTab>('upcoming')
-  const [openId, setOpenId] = useState<string | null>('AF1597')
-  const list = trips.filter((t) => t.tab === tab)
+  const [params, setParams] = useSearchParams()
+  const origin = params.get('origin')
+  const destination = params.get('destination')
+  const [tab, setTab] = useState<BookingTab>('upcoming')
+  // undefined = nothing chosen yet: the first card of the tab is open
+  const [openId, setOpenId] = useState<number | null | undefined>(undefined)
+  const bookings = useApi(() => getBookings(tab), [tab])
+
+  const list = (bookings.data ?? []).filter(
+    (b) => (!origin || b.flight.origin.iataCode === origin) && (!destination || b.flight.destination.iataCode === destination),
+  )
+  const open = openId === undefined ? list[0]?.id : openId
 
   return (
     <div className="px-5 pt-6">
@@ -172,7 +199,10 @@ export default function MyFlights() {
           <div key={t.key} className="flex justify-center">
             <button
               type="button"
-              onClick={() => setTab(t.key)}
+              onClick={() => {
+                setTab(t.key)
+                setOpenId(undefined)
+              }}
               className={`h-11 rounded-full px-[22px] text-body ${
                 tab === t.key
                   ? 'bg-linear-to-r from-btn-from to-nav-to font-bold text-white shadow-nav-glow'
@@ -185,16 +215,32 @@ export default function MyFlights() {
         ))}
       </div>
 
+      {(origin || destination) && (
+        <button
+          type="button"
+          onClick={() => setParams({})}
+          className="mt-3 flex h-9 items-center gap-2 rounded-full border border-white/80 bg-white/70 px-3.5 text-label font-semibold text-ink backdrop-blur-md"
+        >
+          Filtre : {origin ?? '…'} → {destination ?? '…'}
+          <X size={15} strokeWidth={2.5} aria-label="Retirer le filtre" />
+        </button>
+      )}
+
       <div className="mt-4 space-y-4">
-        {list.map((t) => (
-          <TripCard
-            key={t.flightId}
-            trip={t}
-            open={openId === t.flightId}
-            onToggle={() => setOpenId(openId === t.flightId ? null : t.flightId)}
+        {bookings.loading && [0, 1].map((i) => <Skeleton key={i} className="h-24 rounded-panel" />)}
+        {bookings.error && <ErrorCard message={bookings.error.message} onRetry={bookings.reload} className="rounded-panel" />}
+        {bookings.data &&
+          list.map((b) => (
+            <TripCard key={b.id} booking={b} tab={tab} open={open === b.id} onToggle={() => setOpenId(open === b.id ? null : b.id)} />
+          ))}
+        {bookings.data && list.length === 0 && (
+          <EmptyState
+            icon={Plane}
+            title={EMPTY[tab]}
+            text={origin || destination ? 'Aucune réservation ne correspond à ce trajet.' : undefined}
+            className="rounded-panel"
           />
-        ))}
-        {list.length === 0 && <p className="py-10 text-center text-white/80">Aucun vol.</p>}
+        )}
       </div>
     </div>
   )

@@ -1,13 +1,15 @@
-import { Clock, Globe, Hourglass, Info, Plane, Star, Luggage, type LucideIcon } from 'lucide-react'
+import { Clock, Globe, Hourglass, Info, Luggage, Plane, Star, type LucideIcon } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import AirlineLogo from '../components/AirlineLogo'
-import ComingSoon from '../components/ComingSoon'
 import GlassCard from '../components/GlassCard'
 import PageHeader from '../components/PageHeader'
+import { ErrorCard, Skeleton } from '../components/States'
 import StatusBadge from '../components/StatusBadge'
 import { Duotone } from '../components/icons'
-import { getFlight } from '../data/flights'
+import { ApiError, addFavorite, getFavorite, getFlight, removeFavorite } from '../lib/api'
+import { formatDuration, formatTime } from '../lib/format'
+import { useApi } from '../lib/useApi'
 
 function Row({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
@@ -20,42 +22,83 @@ function Row({ icon: Icon, label, value }: { icon: LucideIcon; label: string; va
 }
 
 export default function FlightDetail() {
-  const { id = '' } = useParams()
+  const id = Number(useParams().id)
   const navigate = useNavigate()
-  const [favorite, setFavorite] = useState(false)
-  const flight = getFlight(id)
+  const flightState = useApi(() => getFlight(id), [id])
+  const favoriteState = useApi(() => getFavorite(id), [id])
+  // local override after a click, until the page is reloaded
+  const [favorite, setFavorite] = useState<boolean | null>(null)
+  const [favError, setFavError] = useState('')
+  const isFavorite = favorite ?? favoriteState.data?.isFavorite ?? false
 
-  if (!flight) {
+  const toggleFavorite = async () => {
+    const next = !isFavorite
+    setFavorite(next)
+    setFavError('')
+    try {
+      if (next) await addFavorite(id)
+      else await removeFavorite(id)
+    } catch (e) {
+      setFavorite(!next)
+      setFavError(e instanceof ApiError ? e.message : 'Action impossible.')
+    }
+  }
+
+  const header = (
+    <PageHeader
+      title="Détails du vol"
+      right={
+        <button
+          type="button"
+          aria-label={isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+          aria-pressed={isFavorite}
+          disabled={!flightState.data}
+          onClick={toggleFavorite}
+          className="round-glass"
+        >
+          <Star size={20} fill={isFavorite ? 'currentColor' : 'none'} className={isFavorite ? 'text-gold' : ''} />
+        </button>
+      }
+    />
+  )
+
+  if (flightState.loading) {
     return (
       <div className="px-5">
-        <PageHeader title="Détails du vol" />
-        <div className="mt-10">
-          <ComingSoon icon={Plane} title="Vol introuvable" text="Ce vol n'existe pas ou a été supprimé." onBack={() => navigate('/recherche')} />
-        </div>
+        {header}
+        <Skeleton className="mt-4 h-[520px] rounded-panel" />
+      </div>
+    )
+  }
+  if (flightState.error || !flightState.data) {
+    return (
+      <div className="px-5">
+        {header}
+        <ErrorCard
+          message={flightState.error?.message ?? 'Vol introuvable.'}
+          onRetry={flightState.error?.status === 404 ? undefined : flightState.reload}
+          className="mt-6 rounded-panel"
+        />
       </div>
     )
   }
 
+  const flight = flightState.data
   const departure = flight.direction === 'departure'
+  const country = departure ? flight.destination.country : flight.origin.country
+  const gateLocation = flight.gate?.location
 
   return (
-    <div className="px-5">
-      <PageHeader
-        title="Détails du vol"
-        right={
-          <button type="button" aria-label="Favori" onClick={() => setFavorite((v) => !v)} className="round-glass">
-            <Star size={20} fill={favorite ? 'currentColor' : 'none'} className={favorite ? 'text-gold' : ''} />
-          </button>
-        }
-      />
-
+    <div className="space-y-4 px-5">
+      {header}
+      {favError && <ErrorCard message={favError} />}
       <GlassCard className="mt-4 space-y-4 rounded-panel">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <AirlineLogo flight={flight} size={52} />
+            <AirlineLogo airline={flight.airline} size={52} />
             <div>
-              <p className="text-small text-ink-soft">{flight.airline}</p>
-              <p className="text-flight-lg font-extrabold leading-tight">{flight.code}</p>
+              <p className="text-small text-ink-soft">{flight.airline.name}</p>
+              <p className="text-flight-lg font-extrabold leading-tight">{flight.flightNumber}</p>
             </div>
           </div>
           <StatusBadge status={flight.status} />
@@ -63,32 +106,32 @@ export default function FlightDetail() {
 
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-label font-semibold text-ink-soft">{flight.fromCity}</p>
-            <p className="text-heading font-extrabold">{flight.departureTime}</p>
+            <p className="text-label font-semibold text-ink-soft">{flight.origin.city}</p>
+            <p className="text-heading font-extrabold">{formatTime(flight.departsAt)}</p>
             <p className="text-small text-ink-soft">
-              {flight.fromTerminal}
-              {departure && ` • Porte ${flight.gate}`}
+              {departure ? (flight.terminalName ?? '—') : flight.origin.iataCode}
+              {departure && flight.gateCode && ` • Porte ${flight.gateCode}`}
             </p>
           </div>
           <span className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/12 text-primary">
             <Plane size={22} fill="currentColor" />
           </span>
           <div className="text-right">
-            <p className="text-label font-semibold text-ink-soft">{flight.toCity}</p>
-            <p className="text-heading font-extrabold">{flight.arrivalTime}</p>
-            <p className="text-small text-ink-soft">{flight.toTerminal}</p>
+            <p className="text-label font-semibold text-ink-soft">{flight.destination.city}</p>
+            <p className="text-heading font-extrabold">{formatTime(flight.arrivesAt)}</p>
+            <p className="text-small text-ink-soft">{flight.arrivalTerminal ?? flight.destination.iataCode}</p>
           </div>
         </div>
 
         <ul className="rounded-tile-lg bg-white/45 px-[14px] py-1">
           {departure ? (
-            <Row icon={Clock} label="Embarquement" value={flight.boarding} />
+            <Row icon={Clock} label="Embarquement" value={flight.boardingAt ? formatTime(flight.boardingAt) : '—'} />
           ) : (
-            <Row icon={Luggage} label="Tapis bagages" value={flight.belt ? `n° ${flight.belt}` : '—'} />
+            <Row icon={Luggage} label="Tapis bagages" value={flight.beltNumber ? `n° ${flight.beltNumber}` : '—'} />
           )}
-          <Row icon={Globe} label="Pays" value={flight.country} />
-          <Row icon={Plane} label="Type d'avion" value={flight.aircraft} />
-          <Row icon={Hourglass} label="Durée du vol" value={flight.duration} />
+          <Row icon={Globe} label="Pays" value={country} />
+          <Row icon={Plane} label="Type d'avion" value={flight.aircraft?.model.name ?? '—'} />
+          <Row icon={Hourglass} label="Durée du vol" value={formatDuration(flight.durationMinutes)} />
         </ul>
 
         <div className="flex gap-3 rounded-tile-lg bg-primary/12 p-[14px] text-body">
@@ -96,9 +139,11 @@ export default function FlightDetail() {
           Veuillez vous présenter à la porte au moins 30 min avant le départ.
         </div>
 
-        <button type="button" onClick={() => navigate(`/carte?place=gate-${flight.gate}`)} className="btn-cta">
-          Voir sur la carte
-        </button>
+        {gateLocation && (
+          <button type="button" onClick={() => navigate(`/carte?location=${gateLocation.id}`)} className="btn-cta">
+            Voir sur la carte
+          </button>
+        )}
       </GlassCard>
     </div>
   )
